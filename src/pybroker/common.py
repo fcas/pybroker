@@ -24,6 +24,7 @@ from typing import (
     Optional,
     Sequence,
     Union,
+    cast,
 )
 
 _tf_pattern: Final = re.compile(r"(\d+)([A-Za-z]+)")
@@ -142,6 +143,42 @@ class StopType(Enum):
     TRAILING = "trailing"
 
 
+class OrderType(Enum):
+    """Order type classifications.
+
+    Attributes:
+        MARKET: Market order.
+        LIMIT: Limit order.
+        STOP_BAR: Bar stop triggered order.
+        STOP_LOSS: Stop loss triggered order.
+        STOP_PROFIT: Take profit triggered order.
+        STOP_TRAILING: Trailing stop triggered order.
+    """
+
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP_BAR = "stop_bar"
+    STOP_LOSS = "stop_loss"
+    STOP_PROFIT = "stop_profit"
+    STOP_TRAILING = "stop_trailing"
+
+
+class PositionIntent(Enum):
+    """Position intent of an order.
+
+    Attributes:
+        BUY_TO_OPEN: Buy to open a long position.
+        BUY_TO_CLOSE: Buy to close a short position.
+        SELL_TO_OPEN: Sell to open a short position.
+        SELL_TO_CLOSE: Sell to close a long position.
+    """
+
+    BUY_TO_OPEN = "buy_to_open"
+    BUY_TO_CLOSE = "buy_to_close"
+    SELL_TO_OPEN = "sell_to_open"
+    SELL_TO_CLOSE = "sell_to_close"
+
+
 class FeeMode(Enum):
     """Brokerage fee mode to use for backtesting.
 
@@ -173,6 +210,20 @@ class FeeInfo(NamedTuple):
     order_type: Literal["buy", "sell"]
 
 
+class PositionMode(Enum):
+    """Position mode for backtesting.
+
+    Attributes:
+        DEFAULT: Long and short positions.
+        LONG_ONLY: Long-only positions.
+        SHORT_ONLY: Short-only positions.
+    """
+
+    DEFAULT = "default"
+    LONG_ONLY = "long_only"
+    SHORT_ONLY = "short_only"
+
+
 class BarData:
     r"""Contains data for a series of bars. Each field is a
     :class:`numpy.ndarray` that contains bar values in the series. The values
@@ -192,12 +243,12 @@ class BarData:
     def __init__(
         self,
         date: NDArray[np.datetime64],
-        open: NDArray[np.float_],
-        high: NDArray[np.float_],
-        low: NDArray[np.float_],
-        close: NDArray[np.float_],
-        volume: Optional[NDArray[np.float_]],
-        vwap: Optional[NDArray[np.float_]],
+        open: NDArray[np.float64],
+        high: NDArray[np.float64],
+        low: NDArray[np.float64],
+        close: NDArray[np.float64],
+        volume: Optional[NDArray[np.float64]],
+        vwap: Optional[NDArray[np.float64]],
         **kwargs,
     ):
         self.date = date
@@ -218,11 +269,11 @@ class BarData:
 def to_datetime(
     date: Union[str, datetime, np.datetime64, pd.Timestamp],
 ) -> datetime:
-    """Converts ``date`` to :class:`datetime`."""
+    """Converts ``date`` to :class:`datetime.datetime`."""
     if isinstance(date, pd.Timestamp):
-        return date.to_pydatetime()  # type: ignore[union-attr]
+        return date.to_pydatetime()
     elif isinstance(date, datetime):
-        return date  # type: ignore[return-value]
+        return date
     elif isinstance(date, str):
         return pd.to_datetime(date).to_pydatetime()
     elif isinstance(date, np.datetime64):
@@ -232,11 +283,11 @@ def to_datetime(
 
 
 def to_decimal(value: Union[int, float, Decimal]) -> Decimal:
-    """Converts ``value`` to :class:`Decimal`."""
+    """Converts ``value`` to :class:`decimal.Decimal`."""
     value_type = type(value)
     if value_type == Decimal:
         return value  # type: ignore[return-value]
-    elif value_type == int:
+    elif value_type is int:
         return Decimal(value)
     return Decimal(str(value))
 
@@ -254,7 +305,8 @@ def parse_timeframe(timeframe: str) -> list[tuple[int, str]]:
 
     Returns:
         ``list`` of ``tuple[int, str]``, where each tuple contains an ``int``
-        value and ``str`` unit.
+        value and ``str`` unit of one of the following: ``sec``, ``min``,
+        ``hour``, ``day``, ``week``.
     """
     parts = _tf_pattern.findall(timeframe)
     if not parts or len(parts) != len(timeframe.split()):
@@ -357,12 +409,9 @@ def default_parallel() -> Parallel:
 
 
 def get_unique_sorted_dates(col: pd.Series) -> Sequence[np.datetime64]:
-    """Returns sorted unique values from a DataFrame column of dates.
-    Guarantees compatability between Pandas 1 and 2.
-    """
+    """Returns sorted unique values from a DataFrame column of dates."""
     result = col.unique()
-    # TODO: Remove after Pandas 1.0 is no longer supported.
+    # Index-like unique() results expose to_numpy(); ndarrays do not.
     if hasattr(result, "to_numpy"):
-        result = result.to_numpy()
-    result.sort()
-    return result
+        result = result.to_numpy(copy=True)
+    return cast(Sequence[np.datetime64], np.sort(result))

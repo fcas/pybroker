@@ -6,7 +6,7 @@ This code is licensed under Apache 2.0 with Commons Clause license
 (see LICENSE for details).
 """
 
-from pybroker.common import BarData, FeeInfo, FeeMode, PriceType
+from pybroker.common import BarData, FeeInfo, FeeMode, PositionMode, PriceType
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, Optional, Union
@@ -29,12 +29,16 @@ class StrategyConfig:
                 :class:`pybroker.common.FeeInfo`.
             - ``None``: Fees are disabled (default).
         fee_amount: Brokerage fee amount.
-        subtract_fees: Whether to subtract fees from the cash balance after an
-            order is filled. Defaults to ``False``.
         enable_fractional_shares: Whether to enable trading fractional shares.
             Set to ``True`` for crypto trading. Defaults to ``False``.
         round_fill_price: Whether to round fill prices to the nearest cent.
             Defaults to ``True``.
+        position_mode: Position mode for :class:`pybroker.strategy.Strategy`.
+            Supports one of:
+
+            - ``DEFAULT``: Long and short positions.
+            - ``LONG_ONLY``: Long-only positions.
+            - ``SHORT_ONLY``: Short-only positions.
         max_long_positions: Maximum number of long positions that can be held
             at any time in :class:`pybroker.portfolio.Portfolio`. Unlimited
             when ``None``. Defaults to ``None``.
@@ -78,9 +82,9 @@ class StrategyConfig:
         default=None
     )
     fee_amount: float = field(default=0)
-    subtract_fees: bool = field(default=False)
     enable_fractional_shares: bool = field(default=False)
     round_fill_price: bool = field(default=True)
+    position_mode: PositionMode = field(default=PositionMode.DEFAULT)
     max_long_positions: Optional[int] = field(default=None)
     max_short_positions: Optional[int] = field(default=None)
     buy_delay: int = field(default=1)

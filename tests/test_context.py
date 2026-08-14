@@ -59,23 +59,29 @@ def orders(dates, symbols):
     return (
         Order(
             id=1,
-            date=dates[0],
-            symbol=symbols[1],
             type="buy",
+            symbol=symbols[1],
+            date=dates[0],
+            created=None,
+            order_type="market",
+            intent="buy_to_open",
+            shares=Decimal(200),
             limit_price=None,
-            fill_price=10,
-            shares=200,
-            fees=0,
+            fill_price=Decimal(10),
+            fees=Decimal(0),
         ),
         Order(
             id=2,
-            date=dates[1],
-            symbol=symbols[2],
             type="sell",
-            limit_price=100,
-            fill_price=101.1,
-            shares=100,
-            fees=0,
+            symbol=symbols[2],
+            date=dates[1],
+            created=None,
+            order_type="market",
+            intent="sell_to_open",
+            shares=Decimal(100),
+            limit_price=Decimal(100),
+            fill_price=Decimal("101.1"),
+            fees=Decimal(0),
         ),
     )
 
@@ -259,21 +265,29 @@ def test_portfolio_field(ctx, portfolio, field, port_field):
 def test_sell_all_shares(ctx_with_pos):
     ctx_with_pos.sell_all_shares()
     assert ctx_with_pos.sell_shares == 200
+    assert ctx_with_pos._exiting_pos is True
 
 
 def test_sell_all_shares_when_no_position(ctx):
-    ctx.sell_all_shares()
-    assert ctx.sell_shares is None
+    with pytest.raises(
+        ValueError,
+        match=re.escape("sell_all_shares failed: No long position for SPY"),
+    ):
+        ctx.sell_all_shares()
 
 
 def test_cover_all_shares(ctx_with_pos):
     ctx_with_pos.cover_all_shares()
     assert ctx_with_pos.buy_shares == 100
+    assert ctx_with_pos._exiting_pos is True
 
 
 def test_cover_all_shares_when_no_position(ctx):
-    ctx.cover_all_shares()
-    assert ctx.buy_shares is None
+    with pytest.raises(
+        ValueError,
+        match=re.escape("cover_all_shares failed: No short position for SPY"),
+    ):
+        ctx.cover_all_shares()
 
 
 def test_model(ctx, trained_models, symbol):
@@ -843,6 +857,7 @@ def test_set_exec_ctx_data(ctx, sym_end_index):
     date = np.datetime64("2020-01-01")
     ctx._foreign = {"SPY": np.random.rand(100)}
     ctx._cover = True
+    ctx._exiting_pos = True
     ctx.buy_fill_price = PriceType.AVERAGE
     ctx.buy_shares = 100
     ctx.buy_limit_price = 99
@@ -865,6 +880,7 @@ def test_set_exec_ctx_data(ctx, sym_end_index):
     assert ctx.bars == sym_end_index[ctx.symbol]
     assert not ctx._foreign
     assert ctx._cover is False
+    assert ctx._exiting_pos is False
     assert ctx.buy_fill_price is None
     assert ctx.buy_shares is None
     assert ctx.buy_limit_price is None

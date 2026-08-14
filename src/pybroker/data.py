@@ -9,7 +9,7 @@ This code is licensed under Apache 2.0 with Commons Clause license
 import itertools
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Final, Iterable, Optional, Union
+from typing import Any, Final, Iterable, Optional, Union
 
 import alpaca.data.historical.crypto as alpaca_crypto
 import alpaca.data.historical.stock as alpaca_stock
@@ -43,7 +43,7 @@ class DataSourceCacheMixin:
         timeframe: str,
         start_date: Union[str, datetime, pd.Timestamp, np.datetime64],
         end_date: Union[str, datetime, pd.Timestamp, np.datetime64],
-        adjust: Optional[str],
+        adjust: Optional[Any],
     ) -> tuple[pd.DataFrame, Iterable[str]]:
         """Retrieves cached data from disk when caching is enabled with
         :meth:`pybroker.cache.enable_data_source_cache`.
@@ -112,7 +112,7 @@ class DataSourceCacheMixin:
         timeframe: str,
         start_date: Union[str, datetime, pd.Timestamp, np.datetime64],
         end_date: Union[str, datetime, pd.Timestamp, np.datetime64],
-        adjust: Optional[str],
+        adjust: Optional[Any],
         data: pd.DataFrame,
     ):
         """Stores data to disk cache when caching is enabled with
@@ -174,7 +174,7 @@ class DataSource(ABC, DataSourceCacheMixin):
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
         timeframe: Optional[str] = "",
-        adjust: Optional[str] = None,
+        adjust: Optional[Any] = None,
     ) -> pd.DataFrame:
         """Queries data. Cached data is returned if caching is enabled by
         calling :meth:`pybroker.cache.enable_data_source_cache`.
@@ -254,9 +254,10 @@ class DataSource(ABC, DataSourceCacheMixin):
         start_date: datetime,
         end_date: datetime,
         timeframe: Optional[str],
-        adjust: Optional[str],
+        adjust: Optional[Any],
     ) -> pd.DataFrame:
         """:meta public:
+
         Override this method to return data from a custom
         source. The returned :class:`pandas.DataFrame` must contain the
         following columns: ``symbol``, ``date``, ``open``, ``high``, ``low``,
@@ -313,6 +314,29 @@ def _parse_alpaca_timeframe(
     return tf[0], unit
 
 
+def _get_alpaca_crypto_bars(
+    api: alpaca_crypto.CryptoHistoricalDataClient,
+    request: CryptoBarsRequest,
+):
+    get_crypto_bars = api.get_crypto_bars
+    try:
+        from alpaca.data.enums import CryptoFeed
+    except ImportError:
+        try:
+            return get_crypto_bars(request)
+        except TypeError as exc:
+            raise ImportError(
+                "AlpacaCrypto requires alpaca-py>=0.10.0 in the same Python "
+                "environment as your notebook kernel. Upgrade with: "
+                "python -m pip install 'alpaca-py>=0.10.0'"
+            ) from exc
+
+    try:
+        return get_crypto_bars(request, feed=CryptoFeed.US)
+    except TypeError:
+        return get_crypto_bars(request)
+
+
 class Alpaca(DataSource):
     """Retrieves stock data from `Alpaca <https://alpaca.markets/>`_."""
 
@@ -328,7 +352,7 @@ class Alpaca(DataSource):
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
         timeframe: Optional[str] = "1d",
-        adjust: Optional[str] = None,
+        adjust: Optional[Any] = None,
     ) -> pd.DataFrame:
         _parse_alpaca_timeframe(timeframe)
         return super().query(symbols, start_date, end_date, timeframe, adjust)
@@ -339,7 +363,7 @@ class Alpaca(DataSource):
         start_date: datetime,
         end_date: datetime,
         timeframe: Optional[str],
-        adjust: Optional[str],
+        adjust: Optional[Any],
     ) -> pd.DataFrame:
         """:meta private:"""
         amount, unit = _parse_alpaca_timeframe(timeframe)
@@ -422,10 +446,10 @@ class AlpacaCrypto(DataSource):
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
         timeframe: Optional[str] = "1d",
-        _: Optional[str] = None,
+        _adjust: Optional[str] = None,
     ) -> pd.DataFrame:
         _parse_alpaca_timeframe(timeframe)
-        return super().query(symbols, start_date, end_date, timeframe, _)
+        return super().query(symbols, start_date, end_date, timeframe, _adjust)
 
     def _fetch_data(
         self,
@@ -433,7 +457,7 @@ class AlpacaCrypto(DataSource):
         start_date: datetime,
         end_date: datetime,
         timeframe: Optional[str],
-        _: Optional[str],
+        _adjust: Optional[str],
     ) -> pd.DataFrame:
         """:meta private:"""
         amount, unit = _parse_alpaca_timeframe(timeframe)
@@ -444,7 +468,7 @@ class AlpacaCrypto(DataSource):
             timeframe=TimeFrame(amount, unit),
             limit=None,
         )
-        df = self._api.get_crypto_bars(request).df  # type: ignore[union-attr]
+        df = _get_alpaca_crypto_bars(self._api, request).df
         if df.columns.empty:
             return pd.DataFrame(columns=self.COLUMNS)
         if df.empty:
@@ -462,6 +486,11 @@ class AlpacaCrypto(DataSource):
 class YFinance(DataSource):
     r"""Retrieves data from `Yahoo Finance <https://finance.yahoo.com/>`_\ .
 
+    Args:
+        auto_adjust: Whether to auto adjust close prices. If ``True``, then
+            adjusted close prices are stored in the ``close`` column. Defaults
+            to ``False``.
+
     Attributes:
         ADJ_CLOSE: Column name of adjusted close prices.
     """
@@ -469,8 +498,9 @@ class YFinance(DataSource):
     ADJ_CLOSE: Final = "adj_close"
     __TIMEFRAME: Final = "1d"
 
-    def __init__(self):
+    def __init__(self, auto_adjust: bool = False):
         super().__init__()
+        self.auto_adjust = auto_adjust
         self._scope.register_custom_cols(self.ADJ_CLOSE)
 
     def query(
@@ -479,7 +509,7 @@ class YFinance(DataSource):
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
         _timeframe: Optional[str] = "",
-        _adjust: Optional[str] = None,
+        _adjust: Optional[Any] = None,
     ) -> pd.DataFrame:
         r"""Queries data from `Yahoo Finance <https://finance.yahoo.com/>`_\ .
         The timeframe of the data is limited to per day only.
@@ -502,7 +532,7 @@ class YFinance(DataSource):
         start_date: datetime,
         end_date: datetime,
         _timeframe: Optional[str],
-        _adjust: Optional[str],
+        _adjust: Optional[Any],
     ) -> pd.DataFrame:
         """:meta private:"""
         show_yf_progress_bar = (
@@ -514,20 +544,21 @@ class YFinance(DataSource):
             start=start_date,
             end=end_date,
             progress=show_yf_progress_bar,
+            auto_adjust=self.auto_adjust,
         )
         if df.columns.empty:
-            return pd.DataFrame(
-                columns=[
-                    DataCol.SYMBOL.value,
-                    DataCol.DATE.value,
-                    DataCol.OPEN.value,
-                    DataCol.HIGH.value,
-                    DataCol.LOW.value,
-                    DataCol.CLOSE.value,
-                    DataCol.VOLUME.value,
-                    self.ADJ_CLOSE,
-                ]
-            )
+            columns = [
+                DataCol.SYMBOL.value,
+                DataCol.DATE.value,
+                DataCol.OPEN.value,
+                DataCol.HIGH.value,
+                DataCol.LOW.value,
+                DataCol.CLOSE.value,
+                DataCol.VOLUME.value,
+            ]
+            if not self.auto_adjust:
+                columns.append(self.ADJ_CLOSE)
+            return pd.DataFrame(columns=columns)
         if df.empty:
             return df
         df = df.reset_index()
@@ -542,7 +573,8 @@ class YFinance(DataSource):
             result[DataCol.LOW.value] = df["Low"].values
             result[DataCol.CLOSE.value] = df["Close"].values
             result[DataCol.VOLUME.value] = df["Volume"].values
-            result[self.ADJ_CLOSE] = df["Adj Close"].values
+            if not self.auto_adjust:
+                result[self.ADJ_CLOSE] = df["Adj Close"].values
         else:
             df.columns = df.columns.to_flat_index()
             for sym in symbols:
@@ -556,6 +588,7 @@ class YFinance(DataSource):
                 sym_df[DataCol.LOW.value] = df[("Low", sym)].values
                 sym_df[DataCol.CLOSE.value] = df[("Close", sym)].values
                 sym_df[DataCol.VOLUME.value] = df[("Volume", sym)].values
-                sym_df[self.ADJ_CLOSE] = df[("Adj Close", sym)].values
+                if not self.auto_adjust:
+                    sym_df[self.ADJ_CLOSE] = df[("Adj Close", sym)].values
                 result = pd.concat((result, sym_df))
         return result

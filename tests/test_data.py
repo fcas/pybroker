@@ -23,7 +23,9 @@ from pybroker.data import (
     YFinance,
 )
 from pybroker.ext.data import AKShare
+from pybroker.ext.data import YQuery
 from unittest import mock
+from yahooquery import Ticker
 
 API_KEY = "api_key"
 API_SECRET = "api_secret"
@@ -510,22 +512,29 @@ class TestYFinance:
         ],
     )
     @pytest.mark.usefixtures("setup_ds_cache")
-    def test_query(self, param_symbols, expected_df, expected_rows, request):
+    @pytest.mark.parametrize("auto_adjust", [True, False])
+    def test_query(
+        self, param_symbols, expected_df, expected_rows, request, auto_adjust
+    ):
         param_symbols = get_fixture(request, param_symbols)
         expected_df = get_fixture(request, expected_df)
-        yf = YFinance()
+        if auto_adjust:
+            expected_df = expected_df.drop(columns=["Adj Close"])
+        yf = YFinance(auto_adjust=auto_adjust)
         with mock.patch.object(yfinance, "download", return_value=expected_df):
             df = yf.query(param_symbols, START_DATE, END_DATE)
-        assert set(df.columns) == {
+        expected_columns = {
             "date",
             "open",
             "high",
             "low",
             "close",
             "volume",
-            "adj_close",
             "symbol",
         }
+        if not auto_adjust:
+            expected_columns.add("adj_close")
+        assert set(df.columns) == expected_columns
         assert df.shape[0] == expected_rows
         assert set(df["symbol"].unique()) == set(param_symbols)
         assert (df["date"].unique() == expected_df.index.unique()).all()
@@ -547,25 +556,28 @@ class TestYFinance:
             ],
         ],
     )
-    def test_query_when_empty_result(self, symbols, columns):
-        yf = YFinance()
+    @pytest.mark.parametrize("auto_adjust", [True, False])
+    def test_query_when_empty_result(self, symbols, columns, auto_adjust):
+        yf = YFinance(auto_adjust=auto_adjust)
+        if auto_adjust and "adj_close" in columns:
+            columns = [col for col in columns if col != "adj_close"]
         with mock.patch.object(
             yfinance, "download", return_value=pd.DataFrame(columns=columns)
         ):
             df = yf.query(symbols, START_DATE, END_DATE)
         assert df.empty
-        assert set(df.columns) == set(
-            (
-                "date",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "symbol",
-                "adj_close",
-            )
-        )
+        expected_columns = {
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "symbol",
+        }
+        if not auto_adjust:
+            expected_columns.add("adj_close")
+        assert set(df.columns) == expected_columns
 
 
 class TestAKShare:
@@ -640,6 +652,100 @@ class TestAKShare:
         )
 
     @pytest.mark.usefixtures("setup_ds_cache")
+    def test_query_when_em_unavailable_then_uses_tx_fallback_legacy_schema(
+        self,
+    ):
+        # akshare < 1.18.74: stock_zh_a_hist_tx reports volume under
+        # "amount" and has no dedicated "volume" column.
+        symbols = ["000001.SZ"]
+        ak = AKShare()
+        expected_df = pd.DataFrame(
+            {
+                "date": [END_DATE.date()],
+                "open": [1.0],
+                "close": [2.0],
+                "high": [3.0],
+                "low": [4.0],
+                "amount": [5.0],
+            }
+        )
+        with (
+            mock.patch.object(
+                akshare,
+                "stock_zh_a_hist",
+                side_effect=ConnectionError("failed"),
+            ),
+            mock.patch.object(
+                akshare, "stock_zh_a_hist_tx", return_value=expected_df
+            ) as mock_tx,
+        ):
+            df = ak.query(symbols, START_DATE, END_DATE, "1d")
+        mock_tx.assert_called_once_with(
+            symbol="sz000001",
+            start_date=START_DATE.strftime("%Y%m%d"),
+            end_date=END_DATE.strftime("%Y%m%d"),
+            adjust="",
+        )
+        assert df.shape[0] == expected_df.shape[0]
+        assert list(df.columns).count("volume") == 1
+        assert set(df.columns) == {
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "symbol",
+        }
+        assert df["volume"].iloc[0] == 5.0
+
+    @pytest.mark.usefixtures("setup_ds_cache")
+    def test_query_when_em_unavailable_then_uses_tx_fallback_current_schema(
+        self,
+    ):
+        # akshare >= 1.18.74: stock_zh_a_hist_tx added a real "volume"
+        # column and repurposed "amount"/"turnover" as distinct RMB
+        # figures, no longer standing in for volume. Regression guard for
+        # the rename map producing two "volume" columns.
+        symbols = ["000001.SZ"]
+        ak = AKShare()
+        expected_df = pd.DataFrame(
+            {
+                "date": [END_DATE.date()],
+                "open": [1.0],
+                "close": [2.0],
+                "high": [3.0],
+                "low": [4.0],
+                "volume": [6.0],
+                "turnover": [7.0],
+                "amount": [80000.0],
+            }
+        )
+        with (
+            mock.patch.object(
+                akshare,
+                "stock_zh_a_hist",
+                side_effect=ConnectionError("failed"),
+            ),
+            mock.patch.object(
+                akshare, "stock_zh_a_hist_tx", return_value=expected_df
+            ),
+        ):
+            df = ak.query(symbols, START_DATE, END_DATE, "1d")
+        assert df.shape[0] == expected_df.shape[0]
+        assert list(df.columns).count("volume") == 1
+        assert set(df.columns) == {
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "symbol",
+        }
+        assert df["volume"].iloc[0] == 6.0
+
+    @pytest.mark.usefixtures("setup_ds_cache")
     def test_query_when_unsupported_timeframe_then_empty(self):
         symbols = ["A"]
         ak = AKShare()
@@ -670,3 +776,98 @@ class TestAKShare:
                 "symbol",
             )
         )
+
+
+class TestYQuery:
+    @pytest.mark.usefixtures("setup_ds_cache")
+    @pytest.mark.parametrize("timeframe", [None, "", "1h", "1d", "5d", "1w"])
+    def test_query(self, timeframe):
+        yq = YQuery()
+        symbols = ["A"]
+        expected_df = pd.DataFrame(
+            {
+                "date": [END_DATE],
+                "open": [1],
+                "high": [2],
+                "low": [3],
+                "close": [4],
+                "volume": [5],
+                "symbol": symbols,
+            }
+        )
+        with mock.patch.object(Ticker, "history", return_value=expected_df):
+            df = yq.query(symbols, START_DATE, END_DATE, timeframe)
+        assert set(df.columns) == {
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "symbol",
+        }
+        assert df.shape[0] == expected_df.shape[0]
+        assert set(df["symbol"].unique()) == set(symbols)
+        assert (df["date"].unique() == expected_df["date"].unique()).all()
+
+    @pytest.mark.parametrize(
+        "columns",
+        [
+            [],
+            [
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "symbol",
+            ],
+        ],
+    )
+    @pytest.mark.usefixtures("setup_ds_cache")
+    def test_query_when_empty_result(self, columns):
+        yq = YQuery()
+        with mock.patch.object(
+            Ticker, "history", return_value=pd.DataFrame(columns=columns)
+        ):
+            df = yq.query(["A"], START_DATE, END_DATE)
+        assert df.empty
+        assert set(df.columns) == set(
+            (
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "symbol",
+            )
+        )
+
+    @pytest.mark.usefixtures("setup_ds_cache")
+    def test_query_when_unsupported_timeframe_then_error(self):
+        yq = YQuery()
+        symbols = ["A"]
+        expected_df = pd.DataFrame(
+            {
+                "date": [END_DATE],
+                "open": [1],
+                "high": [2],
+                "low": [3],
+                "close": [4],
+                "volume": [5],
+                "symbol": symbols,
+            }
+        )
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "Unsupported timeframe: '90min'.\n"
+                "Supported timeframes: ['', '1hour', '1day', '5day', '1week']."
+            ),
+        ):
+            with mock.patch.object(
+                Ticker, "history", return_value=expected_df
+            ):
+                yq.query(symbols, START_DATE, END_DATE, "90m")

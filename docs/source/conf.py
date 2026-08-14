@@ -4,10 +4,21 @@ import sys
 sys.path.insert(0, os.path.abspath("../../src/"))
 sys.path.insert(0, os.path.abspath("notebooks/"))
 
-nitpick_ignore = [("py:class", "type")]
+nitpick_ignore = [
+    ("py:class", "type"),
+    ("py:class", "numpy.float64"),
+    ("py:class", "numpy.int64"),
+    ("py:class", "numpy._typing._array_like._ScalarT"),
+    # numpy < 2.3 spells the above TypeVar differently.
+    ("py:class", "numpy._typing._array_like._ScalarType_co"),
+    # pandas < 3.0 exposes internal module paths in type annotations.
+    ("py:class", "pandas.core.frame.DataFrame"),
+    ("py:class", "pandas.core.series.Series"),
+    ("py:class", "pandas._libs.tslibs.timestamps.Timestamp"),
+]
 
 project = "PyBroker"
-copyright = "2023, Edward West"
+copyright = "2026, Edward West"
 author = "Edward West"
 release = "1.0"
 
@@ -18,7 +29,6 @@ extensions = [
     "nbsphinx",
     "IPython.sphinxext.ipython_console_highlighting",
     "sphinx.ext.autodoc",
-    "sphinx.ext.autodoc.typehints",
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
@@ -44,6 +54,7 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "diskcache": ("https://grantjenks.com/docs/diskcache/", None),
+    "joblib": ("https://joblib.readthedocs.io/en/latest/", None),
 }
 
 # -- Options for HTML output -------------------------------------------------
@@ -53,6 +64,12 @@ html_title = "PyBroker"
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["../_static"]
 html_extra_path = ["../_html"]
+# Set canonical URL from the Read the Docs Domain
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+html_context = {}
+# Tell Jinja2 templates the build is running on Read the Docs
+if os.environ.get("READTHEDOCS", "") == "True":
+    html_context["READTHEDOCS"] = True
 
 # Multi-language docs.
 language = "en"

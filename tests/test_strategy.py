@@ -101,7 +101,7 @@ class TestWalkforwardMixin:
         )
         dates = sorted(dates)
         assert len(results) == windows
-        for train_idx, test_idx in results:
+        for i, (train_idx, test_idx) in enumerate(results):
             assert len(dates) - (len(train_idx) + len(test_idx) * windows) >= 0
             assert not (set(train_idx) & set(test_idx))
             assert len(train_idx) or len(test_idx)
@@ -112,6 +112,8 @@ class TestWalkforwardMixin:
                 assert dates[train_end_index - 2] != dates[test_start_index]
             if train_size == 0.5:
                 assert len(train_idx) == len(test_idx)
+            if len(test_idx) and i == len(results) - 1:
+                assert dates[dates_length - 1] == dates[sorted(test_idx)[-1]]
 
     @pytest.mark.parametrize(
         "dates_length, windows, lookahead, train_size",
@@ -287,9 +289,11 @@ class TestBacktestMixin:
         assert len(
             list(
                 filter(
-                    lambda o: o.type == "buy"
-                    and o.symbol == "SPY"
-                    and o.shares == 10,
+                    lambda o: (
+                        o.type == "buy"
+                        and o.symbol == "SPY"
+                        and o.shares == 10
+                    ),
                     portfolio.orders,
                 )
             )
@@ -297,9 +301,11 @@ class TestBacktestMixin:
         assert len(
             list(
                 filter(
-                    lambda o: o.type == "sell"
-                    and o.symbol == "AAPL"
-                    and o.shares == 20,
+                    lambda o: (
+                        o.type == "sell"
+                        and o.symbol == "AAPL"
+                        and o.shares == 20
+                    ),
                     portfolio.orders,
                 )
             )
@@ -1214,6 +1220,7 @@ class TestStrategy:
             between_time=between_time,
             calc_bootstrap=calc_bootstrap,
             disable_parallel=disable_parallel,
+            adjust="adjustment",
         )
         if date_range[0] is None:
             expected_start_date = datetime.strptime(START_DATE, "%Y-%m-%d")
@@ -1643,7 +1650,7 @@ class TestStrategy:
     @pytest.mark.parametrize(
         "enable_fractional_shares, expected_shares_type,"
         "expected_short_shares, expected_long_shares",
-        [(True, np.float_, 0.1, 3.14), (False, np.int_, 0, 3)],
+        [(True, np.float64, 0.1, 3.14), (False, np.int_, 0, 3)],
     )
     def test_to_test_result_when_fractional_shares(
         self,
@@ -1690,6 +1697,9 @@ class TestStrategy:
                     type="buy",
                     symbol="SPY",
                     date=np.datetime64(START_DATE),
+                    created=None,
+                    order_type="market",
+                    intent="buy_to_open",
                     shares=Decimal("3.14"),
                     limit_price=Decimal(100),
                     fill_price=Decimal(99),
@@ -1735,6 +1745,7 @@ class TestStrategy:
             calc_bootstrap=False,
             train_only=False,
             signals=None,
+            seed=42,
         )
         assert np.issubdtype(
             result.positions["long_shares"].dtype, expected_shares_type
@@ -1795,6 +1806,9 @@ class TestStrategy:
                     type="buy",
                     symbol="SPY",
                     date=np.datetime64(START_DATE),
+                    created=None,
+                    order_type="market",
+                    intent="buy_to_open",
                     shares=Decimal("3.144"),
                     limit_price=Decimal(100),
                     fill_price=Decimal(99),
@@ -1840,6 +1854,7 @@ class TestStrategy:
             calc_bootstrap=False,
             train_only=False,
             signals=None,
+            seed=42,
         )
         assert result.positions["long_shares"].values[0] == 3.144
         assert result.positions["short_shares"].values[0] == 0.111
@@ -1857,6 +1872,7 @@ class TestStrategy:
             calc_bootstrap=False,
             train_only=False,
             signals=None,
+            seed=42,
         )
         assert result.portfolio.empty
         assert result.positions.empty
@@ -1921,6 +1937,47 @@ class TestStrategy:
         assert trade["entry"] == 200
         assert trade["exit"] == 99.99
         assert trade["shares"] == 100
+
+    def test_backtest_when_exit_on_last_bar_with_multi_symbol_executions(
+        self, data_source_df
+    ):
+        def long_exec_fn(ctx):
+            if not ctx.long_pos():
+                ctx.buy_shares = 100
+                ctx.buy_fill_price = 150
+
+        def short_exec_fn(ctx):
+            if not ctx.short_pos():
+                ctx.sell_shares = 100
+                ctx.sell_fill_price = 200
+
+        def sell_fill_price(_symbol, _bar_data):
+            return 199.99
+
+        def buy_fill_price(_symbol, _bar_data):
+            return 99.99
+
+        config = StrategyConfig(
+            exit_on_last_bar=True,
+            exit_sell_fill_price=sell_fill_price,
+            exit_cover_fill_price=buy_fill_price,
+        )
+        strategy = Strategy(data_source_df, START_DATE, END_DATE, config)
+        strategy.add_execution(long_exec_fn, ["SPY", "AAPL"])
+        strategy.add_execution(short_exec_fn, ["MSFT", "TSLA"])
+        result = strategy.backtest(calc_bootstrap=False)
+        traded_symbols = set(result.trades["symbol"])
+        assert traded_symbols == {"SPY", "AAPL", "MSFT", "TSLA"}
+        for _, trade in result.trades.iterrows():
+            sym_dates = data_source_df[
+                data_source_df["symbol"] == trade["symbol"]
+            ]["date"].unique()
+            sym_dates = sym_dates[sym_dates <= np.datetime64(END_DATE)]
+            assert trade["exit_date"] == sym_dates[-1]
+            if trade["type"] == "long":
+                assert trade["exit"] == 199.99
+            else:
+                assert trade["exit"] == 99.99
 
     def test_backtest_when_buy_shares_and_sell_shares_then_error(
         self, data_source_df
@@ -2156,6 +2213,52 @@ class TestStrategy:
             assert row["fees"].item() == 0
         assert (result.trades["stop"] == "bar").all()
 
+    def test_backtest_when_slippage_and_sell_all_shares(self, data_source_df):
+        class FakeSlippageModel(SlippageModel):
+            def apply_slippage(
+                self, ctx: ExecContext, buy_shares, sell_shares
+            ):
+                if sell_shares:
+                    ctx.sell_shares = 90
+
+        def buy_exec_fn(ctx):
+            if not ctx.long_pos():
+                ctx.buy_shares = 100
+            elif ctx.bars == 2:
+                ctx.sell_all_shares()
+
+        strategy = Strategy(data_source_df, START_DATE, END_DATE)
+        strategy.set_slippage_model(FakeSlippageModel())
+        strategy.add_execution(buy_exec_fn, "SPY")
+        result = strategy.backtest(calc_bootstrap=False)
+        orders = result.orders
+        sell_orders = orders[orders["type"] == "sell"]
+        assert len(sell_orders) == 1
+        assert sell_orders.iloc[0]["shares"] == 100
+
+    def test_backtest_when_slippage_and_cover_all_shares(self, data_source_df):
+        class FakeSlippageModel(SlippageModel):
+            def apply_slippage(
+                self, ctx: ExecContext, buy_shares, sell_shares
+            ):
+                if buy_shares:
+                    ctx.buy_shares = 90
+
+        def buy_exec_fn(ctx):
+            if not ctx.short_pos():
+                ctx.sell_shares = 100
+            elif ctx.bars == 2:
+                ctx.cover_all_shares()
+
+        strategy = Strategy(data_source_df, START_DATE, END_DATE)
+        strategy.set_slippage_model(FakeSlippageModel())
+        strategy.add_execution(buy_exec_fn, "SPY")
+        result = strategy.backtest(calc_bootstrap=False)
+        orders = result.orders
+        buy_orders = orders[orders["type"] == "buy"]
+        assert len(buy_orders) == 1
+        assert buy_orders.iloc[0]["shares"] == 100
+
     def test_backtest_when_stop_loss(self, data_source_df):
         def exec_fn(ctx):
             if ctx.bars == 1:
@@ -2192,14 +2295,14 @@ class TestStrategy:
         assert len(result.orders) == 4
         buy_order = result.orders.iloc[0]
         assert buy_order["type"] == "buy"
-        assert buy_order["symbol"] == "SPY"
+        assert buy_order["symbol"] == "AAPL"
         assert buy_order["date"] == dates[1]
         assert buy_order["shares"] == 100
         assert np.isnan(buy_order["limit_price"])
         assert buy_order["fees"] == 0
         buy_order = result.orders.iloc[1]
         assert buy_order["type"] == "buy"
-        assert buy_order["symbol"] == "AAPL"
+        assert buy_order["symbol"] == "SPY"
         assert buy_order["date"] == dates[1]
         assert buy_order["shares"] == 100
         assert np.isnan(buy_order["limit_price"])
@@ -2329,7 +2432,7 @@ class TestStrategy:
         def exec_fn(ctx):
             if ctx.bars == 1:
                 ctx.buy_shares = 100
-            elif ctx.bars > 30:
+            elif ctx.long_pos() and ctx.bars > 30:
                 ctx.sell_all_shares()
 
         strategy = Strategy(data_source_df, START_DATE, END_DATE)
@@ -2463,3 +2566,31 @@ class TestStrategy:
         strategy.add_execution(exec_fn, "SPY")
         with pytest.raises(ValueError, match=re.escape("warmup must be > 0.")):
             strategy.backtest(warmup=-1)
+
+    def test_backtest_when_args_and_kwargs(self, data_source_df):
+        def exec_fn(ctx, foo, bar=None):
+            assert foo == "foo_value"
+            assert bar == "bar_value"
+
+        strategy = Strategy(data_source_df, START_DATE, END_DATE)
+        strategy.add_execution(
+            exec_fn,
+            "SPY",
+            foo="foo_value",
+            bar="bar_value",
+        )
+        strategy.backtest(calc_bootstrap=False)
+
+    def test_walkforward_when_args_and_kwargs(self, data_source_df):
+        def exec_fn(ctx, foo, bar=None):
+            assert foo == "foo_value"
+            assert bar == "bar_value"
+
+        strategy = Strategy(data_source_df, START_DATE, END_DATE)
+        strategy.add_execution(
+            exec_fn,
+            "SPY",
+            foo="foo_value",
+            bar="bar_value",
+        )
+        strategy.walkforward(windows=2, calc_bootstrap=False)

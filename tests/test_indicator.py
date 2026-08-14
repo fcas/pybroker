@@ -14,14 +14,42 @@ from pybroker.cache import CacheDateFields
 from .fixtures import *  # noqa: F401
 from pybroker.common import BarData, DataCol, IndicatorSymbol, to_datetime
 from pybroker.indicator import (
+    _to_bar_data,
     Indicator,
     IndicatorsMixin,
     IndicatorSet,
+    adx,
+    aroon_diff,
+    aroon_down,
+    aroon_up,
+    close_minus_ma,
+    cubic_deviation,
+    cubic_trend,
+    delta_on_balance_volume,
+    detrended_rsi,
     highest,
     indicator,
+    intraday_intensity,
+    laguerre_rsi,
+    linear_deviation,
+    linear_trend,
     lowest,
+    macd,
+    money_flow,
+    normalized_negative_volume_index,
+    normalized_on_balance_volume,
+    normalized_positive_volume_index,
+    price_change_oscillator,
+    price_intensity,
+    price_volume_fit,
+    quadratic_deviation,
+    quadratic_trend,
+    reactivity,
     returns,
-    _to_bar_data,
+    stochastic,
+    stochastic_rsi,
+    volume_weighted_ma_ratio,
+    volume_momentum,
 )
 from pybroker.vect import lowv
 
@@ -225,6 +253,44 @@ class TestIndicatorSet:
         assert len(result) == len(df)
         assert set(result.columns) == set(["date", "symbol", "hhv", "llv"])
 
+    def test_call_per_symbol_layout_and_values(
+        self, data_source_df, hhv_ind, llv_ind, disable_parallel
+    ):
+        ind_set = IndicatorSet()
+        ind_set.add([hhv_ind, llv_ind])
+        result = ind_set(data_source_df, disable_parallel)
+
+        sym_col = DataCol.SYMBOL.value
+        date_col = DataCol.DATE.value
+
+        assert list(result.columns) == [sym_col, date_col, "hhv", "llv"]
+        assert len(result) == len(data_source_df)
+
+        syms_in_output = result[sym_col].unique().tolist()
+        assert set(syms_in_output) == set(
+            data_source_df[sym_col].unique().tolist()
+        )
+        sym_blocks = result[sym_col].ne(result[sym_col].shift()).cumsum()
+        assert sym_blocks.nunique() == len(syms_in_output)
+
+        for sym in syms_in_output:
+            sym_rows = result[result[sym_col] == sym].reset_index(drop=True)
+            sym_input = data_source_df[
+                data_source_df[sym_col] == sym
+            ].reset_index(drop=True)
+
+            assert len(sym_rows) == len(sym_input)
+            pd.testing.assert_series_equal(
+                sym_rows[date_col],
+                sym_input[date_col],
+                check_names=False,
+            )
+
+            for ind in (hhv_ind, llv_ind):
+                expected = ind(sym_input).to_numpy()
+                actual = sym_rows[ind.name].to_numpy()
+                np.testing.assert_array_equal(actual, expected)
+
 
 @pytest.mark.parametrize(
     "fn, values, period, expected",
@@ -276,9 +342,123 @@ def test_wrappers(fn, values, period, expected):
         vwap=None,
     )
     indicator = fn("my_indicator", "close", period)
+    assert isinstance(indicator, Indicator)
     assert indicator.name == "my_indicator"
     series = indicator(bar_data)
     assert np.array_equal(series.index.to_numpy(), dates)
     assert np.array_equal(
         np.round(series.values, 6), np.round(expected, 6), equal_nan=True
     )
+
+
+@pytest.mark.parametrize(
+    "fn, args",
+    [
+        (
+            detrended_rsi,
+            {
+                "field": "close",
+                "short_length": 5,
+                "long_length": 10,
+                "reg_length": 20,
+            },
+        ),
+        (macd, {"short_length": 5, "long_length": 10, "smoothing": 2.0}),
+        (
+            stochastic,
+            {
+                "lookback": 10,
+                "smoothing": 2,
+            },
+        ),
+        (
+            stochastic_rsi,
+            {
+                "field": "close",
+                "rsi_lookback": 10,
+                "sto_lookback": 10,
+                "smoothing": 2.0,
+            },
+        ),
+        (
+            linear_trend,
+            {"field": "close", "lookback": 10, "atr_length": 20, "scale": 0.5},
+        ),
+        (
+            quadratic_trend,
+            {"field": "close", "lookback": 10, "atr_length": 20, "scale": 0.5},
+        ),
+        (
+            cubic_trend,
+            {"field": "close", "lookback": 10, "atr_length": 20, "scale": 0.5},
+        ),
+        (
+            adx,
+            {
+                "lookback": 10,
+            },
+        ),
+        (
+            aroon_up,
+            {
+                "lookback": 10,
+            },
+        ),
+        (
+            aroon_down,
+            {
+                "lookback": 10,
+            },
+        ),
+        (
+            aroon_diff,
+            {
+                "lookback": 10,
+            },
+        ),
+        (close_minus_ma, {"lookback": 10, "atr_length": 20, "scale": 0.5}),
+        (linear_deviation, {"field": "close", "lookback": 10, "scale": 0.5}),
+        (
+            quadratic_deviation,
+            {"field": "close", "lookback": 10, "scale": 0.5},
+        ),
+        (cubic_deviation, {"field": "close", "lookback": 10, "scale": 0.5}),
+        (price_intensity, {"smoothing": 1.0, "scale": 0.5}),
+        (
+            price_change_oscillator,
+            {"short_length": 5, "multiplier": 3, "scale": 0.5},
+        ),
+        (intraday_intensity, {"lookback": 10, "smoothing": 1.0}),
+        (money_flow, {"lookback": 10, "smoothing": 1.0}),
+        (reactivity, {"lookback": 10, "smoothing": 1.0, "scale": 0.5}),
+        (price_volume_fit, {"lookback": 10, "scale": 0.5}),
+        (volume_weighted_ma_ratio, {"lookback": 10, "scale": 0.5}),
+        (normalized_on_balance_volume, {"lookback": 10, "scale": 0.5}),
+        (
+            delta_on_balance_volume,
+            {"lookback": 10, "delta_length": 5, "scale": 0.5},
+        ),
+        (normalized_positive_volume_index, {"lookback": 10, "scale": 0.5}),
+        (normalized_negative_volume_index, {"lookback": 10, "scale": 0.5}),
+        (volume_momentum, {"short_length": 5, "multiplier": 2, "scale": 2.0}),
+        (laguerre_rsi, {"fe_length": 20}),
+    ],
+)
+def test_indicators(fn, args):
+    dates = pd.date_range(start="1/1/2018", end="1/1/2019").to_numpy()
+    n = len(dates)
+    bar_data = BarData(
+        date=dates,
+        open=np.random.rand(n),
+        high=np.random.rand(n),
+        low=np.random.rand(n),
+        close=np.random.rand(n),
+        volume=np.random.rand(n),
+        vwap=None,
+    )
+    indicator = fn(fn.__name__, **args)
+    assert isinstance(indicator, Indicator)
+    assert indicator.name == fn.__name__
+    series = indicator(bar_data)
+    assert len(series) == n
+    assert np.array_equal(series.index.to_numpy(), dates)

@@ -269,7 +269,7 @@ class BaseContext:
 
         Args:
             name: Name used to identify the model that was registered with
-                :meth:`pybroker.model.model`.
+                :func:`pybroker.model.model`.
             symbol: Ticker symbol of the data that was used to train the model.
 
         Returns:
@@ -280,7 +280,7 @@ class BaseContext:
             raise ValueError(f"Model {name!r} not found for {symbol}.")
         return self._models[model_sym].instance
 
-    def indicator(self, name: str, symbol: str) -> NDArray[np.float_]:
+    def indicator(self, name: str, symbol: str) -> NDArray[np.float64]:
         r"""Returns indicator data.
 
         Args:
@@ -414,7 +414,8 @@ class ExecSignal(NamedTuple):
 
 class PosSizeContext(BaseContext):
     r"""Holds data for a position size handler set with
-    :meth:`pybroker.Strategy.set_pos_size_handler`. Used to set position sizes
+    :meth:`pybroker.strategy.Strategy.set_pos_size_handler`. Used to set
+    position sizes
     when placing orders from buy and sell signals.
 
     Attributes:
@@ -674,6 +675,7 @@ class ExecContext(BaseContext):
         self.stop_trailing_exit_price: Optional[PriceType] = None
 
         self._cover: bool = False
+        self._exiting_pos: bool = False
 
     def _verify_symbol(self):
         if self.symbol is None:
@@ -698,67 +700,67 @@ class ExecContext(BaseContext):
         """Current bar's date expressed as a ``numpy.datetime64``."""
         self._verify_symbol()
         return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+            self.symbol,
             DataCol.DATE.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def open(self) -> NDArray[np.float_]:
+    def open(self) -> NDArray[np.float64]:
         """Current bar's open price."""
         self._verify_symbol()
         return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+            self.symbol,
             DataCol.OPEN.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def high(self) -> NDArray[np.float_]:
+    def high(self) -> NDArray[np.float64]:
         """Current bar's high price."""
         self._verify_symbol()
         return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+            self.symbol,
             DataCol.HIGH.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def low(self) -> NDArray[np.float_]:
+    def low(self) -> NDArray[np.float64]:
         """Current bar's low price."""
         self._verify_symbol()
         return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+            self.symbol,
             DataCol.LOW.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def close(self) -> NDArray[np.float_]:
+    def close(self) -> NDArray[np.float64]:
         """Current bar's close price."""
         self._verify_symbol()
         return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+            self.symbol,
             DataCol.CLOSE.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def volume(self) -> Optional[NDArray[np.float_]]:
+    def volume(self) -> Optional[NDArray[np.float64]]:
         """Current bar's volume."""
         self._verify_symbol()
-        return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+        return self._col_scope.fetch(
+            self.symbol,
             DataCol.VOLUME.value,
             self._sym_end_index[self.symbol],
         )
 
     @property
-    def vwap(self) -> Optional[NDArray[np.float_]]:
+    def vwap(self) -> Optional[NDArray[np.float64]]:
         """Current bar's volume-weighted average price (VWAP)."""
         self._verify_symbol()
-        return self._col_scope.fetch(  # type: ignore[return-value]
-            self.symbol,  # type: ignore[arg-type]
+        return self._col_scope.fetch(
+            self.symbol,
             DataCol.VWAP.value,
             self._sym_end_index[self.symbol],
         )
@@ -828,17 +830,23 @@ class ExecContext(BaseContext):
         """Sells all long shares of :attr:`.ExecContext.symbol`."""
         pos = self.long_pos()
         if pos is None:
-            return
+            raise ValueError(
+                f"sell_all_shares failed: No long position for {self.symbol}"
+            )
         self.sell_shares = pos.shares
         self._portfolio.remove_stops(pos)
+        self._exiting_pos = True
 
     def cover_all_shares(self):
         """Covers all short shares of :attr:`.ExecContext.symbol`."""
         pos = self.short_pos()
         if pos is None:
-            return
+            raise ValueError(
+                f"cover_all_shares failed: No short position for {self.symbol}"
+            )
         self.cover_shares = pos.shares
         self._portfolio.remove_stops(pos)
+        self._exiting_pos = True
 
     def foreign(
         self, symbol: str, col: Optional[str] = None
@@ -875,7 +883,7 @@ class ExecContext(BaseContext):
 
         Args:
             name: Name used to identify the model that was registered with
-                :meth:`pybroker.model.model`.
+                :func:`pybroker.model.model`.
             symbol: Ticker symbol of the data that was used to train the model.
                 If ``None``, the ``ExecContext``\ 's :attr:`.symbol` is used.
 
@@ -887,7 +895,7 @@ class ExecContext(BaseContext):
 
     def indicator(
         self, name: str, symbol: Optional[str] = None
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         r"""Returns indicator data.
 
         Args:
@@ -952,8 +960,15 @@ class ExecContext(BaseContext):
             :class:`pybroker.portfolio.Position` if one exists, otherwise
             ``None``.
         """
-        symbol = self._get_symbol(symbol)
-        return super().pos(symbol, "long")
+        # Fast path inlined — called per bar per active symbol (~7k calls
+        # per V0 bench). Skips _get_symbol + super().pos + _verify_pos_type
+        # delegation and collapses the dict membership+lookup into one
+        # dict.get().
+        if symbol is None:
+            symbol = self.symbol
+            if symbol is None:
+                raise ValueError("symbol is not set.")
+        return self._portfolio.long_positions.get(symbol)
 
     def short_pos(
         self,
@@ -971,8 +986,11 @@ class ExecContext(BaseContext):
             :class:`pybroker.portfolio.Position` if one exists, otherwise
             ``None``.
         """
-        symbol = self._get_symbol(symbol)
-        return super().pos(symbol, "short")
+        if symbol is None:
+            symbol = self.symbol
+            if symbol is None:
+                raise ValueError("symbol is not set.")
+        return self._portfolio.short_positions.get(symbol)
 
     def calc_target_shares(
         self,
@@ -1301,6 +1319,7 @@ class ExecContext(BaseContext):
                     "sell_shares or hold_bars must be set when "
                     "sell_fill_price is set."
                 )
+
         if self.buy_shares is None and self.sell_shares is None:
             if (
                 self.stop_loss is not None
@@ -1397,6 +1416,7 @@ def set_exec_ctx_data(ctx: ExecContext, date: np.datetime64):
     ctx._dt = None
     ctx._foreign.clear()
     ctx._cover = False
+    ctx._exiting_pos = False
     ctx.buy_fill_price = None
     ctx.buy_shares = None
     ctx.buy_limit_price = None

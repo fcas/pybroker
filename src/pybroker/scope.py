@@ -35,9 +35,27 @@ from typing import (
     Optional,
     Sequence,
     Union,
+    cast,
 )
 
 _EMPTY_PARAM: Final = object()
+
+# Cached enum accesses. Hot paths (ColumnScope.bar_data_from_data_columns,
+# PriceScope.fetch) hit these 10_000+ times per backtest; binding once here
+# skips the enum descriptor call per access.
+_COL_DATE: Final = DataCol.DATE.value
+_COL_OPEN: Final = DataCol.OPEN.value
+_COL_HIGH: Final = DataCol.HIGH.value
+_COL_LOW: Final = DataCol.LOW.value
+_COL_CLOSE: Final = DataCol.CLOSE.value
+_COL_VOLUME: Final = DataCol.VOLUME.value
+_COL_VWAP: Final = DataCol.VWAP.value
+_PRICE_OPEN: Final = PriceType.OPEN
+_PRICE_HIGH: Final = PriceType.HIGH
+_PRICE_LOW: Final = PriceType.LOW
+_PRICE_CLOSE: Final = PriceType.CLOSE
+_PRICE_MIDDLE: Final = PriceType.MIDDLE
+_PRICE_AVERAGE: Final = PriceType.AVERAGE
 
 
 class StaticScope:
@@ -176,6 +194,10 @@ class StaticScope:
         self._params[name] = value
         return value
 
+    def clear_params(self):
+        """Clears all global parameters."""
+        self._params.clear()
+
     @classmethod
     def instance(cls) -> "StaticScope":
         """Returns singleton instance."""
@@ -217,6 +239,11 @@ def unregister_columns(names: Union[str, Iterable[str]], *args):
 def param(name: str, value: Optional[Any] = _EMPTY_PARAM) -> Optional[Any]:
     """Get or set a global parameter."""
     return StaticScope.instance().param(name, value)
+
+
+def clear_params():
+    """Clears all global parameters."""
+    StaticScope.instance().clear_params()
 
 
 class ColumnScope:
@@ -272,7 +299,7 @@ class ColumnScope:
                 self._sym_cols[symbol][name] = None
                 result[name] = None
                 continue
-            array = sym_df[name].to_numpy()
+            array = sym_df[name].to_numpy(copy=True)
             self._sym_cols[symbol][name] = array
             result[name] = array[:end_index]
         return result
@@ -338,11 +365,11 @@ class IndicatorScope:
     ):
         self._indicator_data = indicator_data
         self._filter_dates = filter_dates
-        self._sym_inds: dict[IndicatorSymbol, NDArray[np.float_]] = {}
+        self._sym_inds: dict[IndicatorSymbol, NDArray[np.float64]] = {}
 
     def fetch(
         self, symbol: str, name: str, end_index: Optional[int] = None
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         """Fetches :class:`pybroker.indicator.Indicator` data.
 
         Args:
@@ -362,7 +389,9 @@ class IndicatorScope:
         if ind_sym not in self._indicator_data:
             raise ValueError(f"Indicator {name!r} not found for {symbol}.")
         ind_series = self._indicator_data[ind_sym]
-        ind_data = ind_series[ind_series.index.isin(self._filter_dates)].values
+        ind_data = ind_series[
+            ind_series.index.isin(self._filter_dates)
+        ].to_numpy(copy=True)
         self._sym_inds[ind_sym] = ind_data
         return ind_data[:end_index]
 
@@ -533,79 +562,61 @@ class PriceScope:
         end_index = self._sym_end_index[symbol]
         price_type = type(price)
         fill_price = None
-        if price_type == PriceType:
-            if price == PriceType.OPEN:
-                open_ = self._col_scope.fetch(
-                    symbol, DataCol.OPEN.value, end_index
-                )
+        if price_type is PriceType:
+            if price is _PRICE_OPEN:
+                open_ = self._col_scope.fetch(symbol, _COL_OPEN, end_index)
                 if open_ is None:
                     raise ValueError("Open price not found.")
                 fill_price = open_[-1]
-            elif price == PriceType.HIGH:
-                high = self._col_scope.fetch(
-                    symbol, DataCol.HIGH.value, end_index
-                )
+            elif price is _PRICE_HIGH:
+                high = self._col_scope.fetch(symbol, _COL_HIGH, end_index)
                 if high is None:
                     raise ValueError("High price not found.")
                 fill_price = high[-1]
-            elif price == PriceType.LOW:
-                low = self._col_scope.fetch(
-                    symbol, DataCol.LOW.value, end_index
-                )
+            elif price is _PRICE_LOW:
+                low = self._col_scope.fetch(symbol, _COL_LOW, end_index)
                 if low is None:
                     raise ValueError("Low price not found.")
                 fill_price = low[-1]
-            elif price == PriceType.CLOSE:
-                close = self._col_scope.fetch(
-                    symbol, DataCol.CLOSE.value, end_index
-                )
+            elif price is _PRICE_CLOSE:
+                close = self._col_scope.fetch(symbol, _COL_CLOSE, end_index)
                 if close is None:
                     raise ValueError("Close price not found.")
                 fill_price = close[-1]
-            elif price == PriceType.MIDDLE:
-                low = self._col_scope.fetch(
-                    symbol, DataCol.LOW.value, end_index
-                )
+            elif price is _PRICE_MIDDLE:
+                low = self._col_scope.fetch(symbol, _COL_LOW, end_index)
                 if low is None:
                     raise ValueError("Low price not found.")
-                high = self._col_scope.fetch(
-                    symbol, DataCol.HIGH.value, end_index
-                )
+                high = self._col_scope.fetch(symbol, _COL_HIGH, end_index)
                 if high is None:
                     raise ValueError("High price not found.")
-
                 fill_price = low[-1] + (high[-1] - low[-1]) / 2.0
-            elif price == PriceType.AVERAGE:
-                open_ = self._col_scope.fetch(
-                    symbol, DataCol.OPEN.value, end_index
-                )
+            elif price is _PRICE_AVERAGE:
+                open_ = self._col_scope.fetch(symbol, _COL_OPEN, end_index)
                 if open_ is None:
                     raise ValueError("Open price not found.")
-                high = self._col_scope.fetch(
-                    symbol, DataCol.HIGH.value, end_index
-                )
+                high = self._col_scope.fetch(symbol, _COL_HIGH, end_index)
                 if high is None:
                     raise ValueError("High price not found.")
-                low = self._col_scope.fetch(
-                    symbol, DataCol.LOW.value, end_index
-                )
+                low = self._col_scope.fetch(symbol, _COL_LOW, end_index)
                 if low is None:
                     raise ValueError("Low price not found.")
-                close = self._col_scope.fetch(
-                    symbol, DataCol.CLOSE.value, end_index
-                )
+                close = self._col_scope.fetch(symbol, _COL_CLOSE, end_index)
                 if close is None:
                     raise ValueError("Close price not found.")
                 fill_price = (open_[-1] + low[-1] + high[-1] + close[-1]) / 4.0
             else:
                 raise ValueError(f"Unknown price: {price_type}")
         elif (
-            price_type == float
-            or price_type == int
+            price_type is float
+            or price_type is int
             or isinstance(price, np.floating)
             or isinstance(price, Decimal)
         ):
-            fill_price = price
+            # price_type is checked above via identity comparison (not
+            # isinstance) to exclude bool, so mypy can't narrow price's
+            # type from this branch on its own; narrow explicitly.
+            fill_price = cast(Union[int, float, np.floating, Decimal], price)
         elif callable(price):
             bar_data = self._col_scope.bar_data_from_data_columns(
                 symbol, self._sym_end_index[symbol]
@@ -614,8 +625,18 @@ class PriceScope:
         else:
             raise ValueError(f"Unknown price: {price_type}")
         if self._round_fill_price:
-            fill_price = round(fill_price, 2)
-        return to_decimal(fill_price)
+            # Fast 2-decimal rounding. builtins.round(float, 2) costs
+            # ~7 us/call; the integer divmod-100 form is ~0.5 us/call and
+            # yields the same clean decimal string when the result is then
+            # wrapped via Decimal(str(x)). Must divide by 100.0 (integer
+            # ratio), NOT multiply by 0.01 (binary float 0.01 re-introduces
+            # the rounding artifact we just removed).
+            fp = float(fill_price)
+            if fp >= 0.0:
+                fill_price = int(fp * 100.0 + 0.5) / 100.0
+            else:
+                fill_price = -int(-fp * 100.0 + 0.5) / 100.0
+        return to_decimal(cast(float, fill_price))
 
 
 class PendingOrder(NamedTuple):
@@ -734,14 +755,33 @@ class PendingOrderScope:
             for order_id in cancel_ids:
                 self.remove(order_id)
 
-    def orders(self, symbol: Optional[str] = None) -> Iterable[PendingOrder]:
-        r"""Returns an :class:`Iterable` of :class:`.PendingOrder`\ s."""
-        if symbol is None:
-            return self._orders.values()
-        else:
+    def orders(
+        self,
+        symbol: Optional[str] = None,
+        order_id: Optional[int] = None,
+    ) -> Iterable[PendingOrder]:
+        r"""Returns an :class:`Iterable` of :class:`.PendingOrder`\ s.
+
+        Args:
+            symbol: Filter by ticker symbol.
+            order_id: Filter by order ID.
+        """
+        if order_id is not None and symbol is not None:
+            order = self._orders.get(order_id)
+            if order is not None and order.symbol == symbol:
+                return [order]
+            return []
+        elif order_id is not None:
+            order = self._orders.get(order_id)
+            if order is not None:
+                return [order]
+            return []
+        elif symbol is not None:
             if symbol not in self._sym_orders:
                 return []
             return self._sym_orders[symbol]
+        else:
+            return self._orders.values()
 
 
 def get_signals(

@@ -35,7 +35,7 @@ PyBroker
             alt="python">
       </a>
       <a href="https://pypi.org/project/lib-pybroker/">
-         <img src="https://img.shields.io/badge/pypi-v1.1.37-brightgreen.svg"
+         <img src="https://img.shields.io/badge/pypi-v1.2.14-brightgreen.svg"
             alt="PyPI">
       </a>
       <a href="https://www.pybroker.com/en/latest/license.html">
@@ -172,7 +172,20 @@ To learn how to use PyBroker, see the notebooks under the *User Guide*:
    :caption: Reference
 
    Configuration Options <reference/pybroker.config>
+
+.. toctree::
+   :maxdepth: 2
+
+   Indicators <reference/pybroker.indicator>
+
+.. toctree::
+   :maxdepth: 4
+
    Modules <reference/modules>
+
+.. toctree::
+   :maxdepth: 1
+
    Index <genindex>
 
 Recommended Reading
@@ -195,10 +208,18 @@ on quantitative finance and algorithmic trading:
       :maxdepth: 1
       :caption: Other Information
 
+      Benchmarking <benchmarking>
       Changelog <changelog>
       License <license>
 
 Contact
 =======
 
-.. image:: _static/email-image.png
+.. image:: ../_static/email-image.png
+
+.. toctree::
+   :caption: Stock News & Alerts
+
+   MoveAlerts.ai <https://www.movealerts.ai>
+
+**AI-driven market analysis for the stocks you follow.** Receive real-time AI alerts and sentiment analysis for 10,000+ tickers at `www.movealerts.ai <https://www.movealerts.ai>`_.

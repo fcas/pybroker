@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from collections import deque
 from decimal import Decimal
-from pybroker.common import FeeMode, PriceType, StopType
+from pybroker.common import FeeMode, PositionMode, PriceType, StopType
 from pybroker.portfolio import Portfolio, Stop
 from pybroker.scope import ColumnScope, PriceScope
 
@@ -35,20 +35,26 @@ DATE_4 = np.datetime64("2020-02-05")
 
 def assert_order(
     order,
-    date,
-    symbol,
     type,
-    limit_price,
-    fill_price,
-    shares,
-    fees,
+    symbol,
+    date,
+    created=None,
+    order_type="market",
+    intent=None,
+    shares=None,
+    limit_price=None,
+    fill_price=None,
+    fees=None,
 ):
-    assert order.date == date
-    assert order.symbol == symbol
     assert order.type == type
+    assert order.symbol == symbol
+    assert order.date == date
+    assert order.created == created
+    assert order.order_type == order_type
+    assert order.intent == intent
+    assert order.shares == shares
     assert order.limit_price == limit_price
     assert order.fill_price == fill_price
-    assert order.shares == shares
     assert order.fees == fees
 
 
@@ -137,6 +143,7 @@ def test_buy(fill_price, limit_price):
         fill_price=fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -179,6 +186,7 @@ def test_buy_when_partial_filled():
         fill_price=FILL_PRICE_1,
         shares=shares,
         fees=0,
+        intent="buy_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -224,6 +232,7 @@ def test_buy_when_existing_long_position():
         fill_price=FILL_PRICE_2,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -282,6 +291,7 @@ def test_buy_when_multiple_positions():
         fill_price=FILL_PRICE_2,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -343,6 +353,7 @@ def test_buy_when_existing_short_position():
         fill_price=FILL_PRICE_1,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -415,6 +426,7 @@ def test_buy_when_existing_short_and_not_enough_cash():
         fill_price=5,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=buy_order,
@@ -425,6 +437,7 @@ def test_buy_when_existing_short_and_not_enough_cash():
         fill_price=exit_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -586,6 +599,7 @@ def test_sell_when_all_shares(fill_price, limit_price):
         fill_price=fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -639,6 +653,7 @@ def test_sell_when_all_shares_and_multiple_bars():
         fill_price=FILL_PRICE_3,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -686,6 +701,7 @@ def test_sell_when_all_shares_and_fractional():
         fill_price=FILL_PRICE_1,
         shares=shares,
         fees=0,
+        intent="buy_to_open",
     )
     pos = portfolio.long_positions[SYMBOL_1]
     assert_position(
@@ -714,6 +730,7 @@ def test_sell_when_all_shares_and_fractional():
         fill_price=FILL_PRICE_3,
         shares=shares,
         fees=0,
+        intent="sell_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -793,6 +810,7 @@ def test_buy_and_sell_when_fees(
         fill_price=FILL_PRICE_1,
         shares=SHARES_1,
         fees=expected_buy_fees,
+        intent="buy_to_open",
     )
     assert_order(
         order=sell_order,
@@ -803,14 +821,13 @@ def test_buy_and_sell_when_fees(
         fill_price=FILL_PRICE_3,
         shares=SHARES_1,
         fees=expected_sell_fees,
+        intent="sell_to_close",
     )
     assert portfolio.fees == expected_buy_fees + expected_sell_fees
 
 
 def test_subtract_fees():
-    portfolio = Portfolio(
-        3, FeeMode.PER_ORDER, fee_amount=1, subtract_fees=True
-    )
+    portfolio = Portfolio(3, FeeMode.PER_ORDER, fee_amount=1)
     order = portfolio.buy(DATE_1, SYMBOL_1, shares=1, fill_price=1)
     assert_order(
         order=order,
@@ -821,6 +838,7 @@ def test_subtract_fees():
         fill_price=1,
         shares=1,
         fees=1,
+        intent="buy_to_open",
     )
     assert portfolio.cash == 1
     order = portfolio.buy(DATE_2, SYMBOL_1, shares=1, fill_price=1)
@@ -833,6 +851,7 @@ def test_subtract_fees():
         fill_price=1,
         shares=1,
         fees=1,
+        intent="buy_to_open",
     )
     assert portfolio.cash == -1
     order = portfolio.buy(DATE_2, SYMBOL_1, shares=1, fill_price=1)
@@ -861,6 +880,7 @@ def test_sell_when_partial_shares():
         fill_price=FILL_PRICE_3,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -935,6 +955,7 @@ def test_sell_when_multiple_entries():
         fill_price=FILL_PRICE_3,
         shares=SHARES_2,
         fees=0,
+        intent="sell_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1075,6 +1096,7 @@ def test_short(fill_price, limit_price):
         fill_price=fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1120,6 +1142,7 @@ def test_short_when_existing_short_position():
         fill_price=FILL_PRICE_4,
         shares=SHARES_2,
         fees=0,
+        intent="sell_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1178,6 +1201,7 @@ def test_short_when_multiple_positions():
         fill_price=FILL_PRICE_4,
         shares=SHARES_2,
         fees=0,
+        intent="sell_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1247,6 +1271,7 @@ def test_short_when_existing_long_position():
         fill_price=FILL_PRICE_3,
         shares=SHARES_2,
         fees=0,
+        intent="sell_to_open",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1382,6 +1407,7 @@ def test_cover_when_all_shares(fill_price, limit_price):
         fill_price=fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1435,6 +1461,7 @@ def test_cover_when_partial_shares():
         fill_price=FILL_PRICE_1,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1509,6 +1536,7 @@ def test_cover_when_multiple_entries():
         fill_price=FILL_PRICE_1,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1604,6 +1632,7 @@ def test_cover_when_not_enough_cash():
         fill_price=sell_fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=buy_order,
@@ -1614,6 +1643,7 @@ def test_cover_when_not_enough_cash():
         fill_price=buy_fill_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_close",
     )
     assert_portfolio(
         portfolio=portfolio,
@@ -1725,6 +1755,7 @@ def test_exit_position():
         fill_price=FILL_PRICE_2,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_close",
     )
     portfolio.exit_position(
         DATE_2, SYMBOL_2, buy_fill_price=FILL_PRICE_4, sell_fill_price=0
@@ -1761,6 +1792,7 @@ def test_exit_position():
         fill_price=FILL_PRICE_4,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_close",
     )
 
 
@@ -1840,6 +1872,7 @@ def test_trigger_long_bar_stop():
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -1850,6 +1883,8 @@ def test_trigger_long_bar_stop():
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_bar",
+        intent="sell_to_close",
     )
 
 
@@ -1932,6 +1967,7 @@ def test_trigger_long_loss_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -1942,6 +1978,8 @@ def test_trigger_long_loss_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_loss",
+        intent="sell_to_close",
     )
 
 
@@ -2024,6 +2062,7 @@ def test_trigger_long_profit_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2034,6 +2073,8 @@ def test_trigger_long_profit_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_profit",
+        intent="sell_to_close",
     )
 
 
@@ -2125,6 +2166,7 @@ def test_trigger_long_trailing_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2135,6 +2177,8 @@ def test_trigger_long_trailing_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_trailing",
+        intent="sell_to_close",
     )
 
 
@@ -2214,6 +2258,7 @@ def test_trigger_short_bar_stop():
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2224,6 +2269,8 @@ def test_trigger_short_bar_stop():
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_bar",
+        intent="buy_to_close",
     )
 
 
@@ -2306,6 +2353,7 @@ def test_trigger_short_loss_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2316,6 +2364,8 @@ def test_trigger_short_loss_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_loss",
+        intent="buy_to_close",
     )
 
 
@@ -2398,6 +2448,7 @@ def test_trigger_short_profit_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2408,6 +2459,8 @@ def test_trigger_short_profit_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_profit",
+        intent="buy_to_close",
     )
 
 
@@ -2499,6 +2552,7 @@ def test_trigger_short_trailing_stop(percent, points, expected_fill_price):
         fill_price=entry_price,
         shares=SHARES_1,
         fees=0,
+        intent="sell_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2509,6 +2563,8 @@ def test_trigger_short_trailing_stop(percent, points, expected_fill_price):
         fill_price=expected_fill_price,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_trailing",
+        intent="buy_to_close",
     )
 
 
@@ -2859,6 +2915,7 @@ def test_check_stops_when_multiple_entries():
         fill_price=entry_price_1,
         shares=SHARES_1,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[1],
@@ -2869,6 +2926,7 @@ def test_check_stops_when_multiple_entries():
         fill_price=entry_price_2,
         shares=SHARES_2,
         fees=0,
+        intent="buy_to_open",
     )
     assert_order(
         order=portfolio.orders[2],
@@ -2879,6 +2937,8 @@ def test_check_stops_when_multiple_entries():
         fill_price=expected_fill_price_2,
         shares=SHARES_2,
         fees=0,
+        order_type="stop_loss",
+        intent="sell_to_close",
     )
     assert_order(
         order=portfolio.orders[3],
@@ -2889,6 +2949,8 @@ def test_check_stops_when_multiple_entries():
         fill_price=expected_fill_price_1,
         shares=SHARES_1,
         fees=0,
+        order_type="stop_loss",
+        intent="sell_to_close",
     )
 
 
@@ -3413,7 +3475,7 @@ def test_capture_bar_when_short_position():
         columns=["symbol", "date", "close", "low", "high"],
     )
     df = df.set_index(["symbol", "date"])
-    portfolio.capture_bar(DATE_1, df)
+    portfolio.capture_bar(DATE_1, ColumnScope(df), {SYMBOL_1: 1})
     pos = portfolio.short_positions[SYMBOL_1]
     assert pos.pnl == (fill_price - close_price) * shares
     assert pos.equity == 0
@@ -3461,7 +3523,7 @@ def test_capture_bar_when_long_position():
         columns=["symbol", "date", "close", "low", "high"],
     )
     df = df.set_index(["symbol", "date"])
-    portfolio.capture_bar(DATE_1, df)
+    portfolio.capture_bar(DATE_1, ColumnScope(df), {SYMBOL_1: 1})
     pos = portfolio.long_positions[SYMBOL_1]
     assert pos.pnl == (close_price - fill_price) * shares
     assert pos.equity == close_price * shares
@@ -3508,7 +3570,7 @@ def test_mae_mfe_when_short_position():
         columns=["symbol", "date", "close", "low", "high"],
     )
     df = df.set_index(["symbol", "date"])
-    portfolio.capture_bar(DATE_1, df)
+    portfolio.capture_bar(DATE_1, ColumnScope(df), {SYMBOL_1: 1})
     portfolio.buy(DATE_1, SYMBOL_1, shares, fill_price)
     assert len(portfolio.trades) == 1
     assert portfolio.trades[0].mae == fill_price - high_price
@@ -3531,8 +3593,30 @@ def test_mae_mfe_when_long_position():
         columns=["symbol", "date", "close", "low", "high"],
     )
     df = df.set_index(["symbol", "date"])
-    portfolio.capture_bar(DATE_1, df)
+    portfolio.capture_bar(DATE_1, ColumnScope(df), {SYMBOL_1: 1})
     portfolio.sell(DATE_1, SYMBOL_1, shares, fill_price)
     assert len(portfolio.trades) == 1
     assert portfolio.trades[0].mae == low_price - fill_price
     assert portfolio.trades[0].mfe == high_price - fill_price
+
+
+def test_long_only_mode():
+    cash = 100_000
+    portfolio = Portfolio(cash, position_mode=PositionMode.LONG_ONLY)
+    portfolio.buy(DATE_1, SYMBOL_1, 100, FILL_PRICE_1)
+    portfolio.sell(DATE_2, SYMBOL_1, 200, FILL_PRICE_1)
+    assert not portfolio.long_positions
+    assert not portfolio.short_positions
+    assert len(portfolio.trades) == 1
+    assert portfolio.trades[0].shares == 100
+
+
+def test_short_only_mode():
+    cash = 100_000
+    portfolio = Portfolio(cash, position_mode=PositionMode.SHORT_ONLY)
+    portfolio.sell(DATE_1, SYMBOL_1, 100, FILL_PRICE_1)
+    portfolio.buy(DATE_2, SYMBOL_1, 200, FILL_PRICE_1)
+    assert not portfolio.long_positions
+    assert not portfolio.short_positions
+    assert len(portfolio.trades) == 1
+    assert portfolio.trades[0].shares == 100

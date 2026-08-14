@@ -9,39 +9,13 @@ This code is licensed under Apache 2.0 with Commons Clause license
 import numpy as np
 import pandas as pd
 from pybroker.scope import StaticScope
-from pybroker.vect import highv
+from pybroker.vect import highv, inverse_normal_cdf, normal_cdf
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from numba import njit
 from numpy.typing import NDArray
 from typing import Callable, NamedTuple, Optional
-
-
-@njit
-def normal_cdf(z: float) -> float:
-    """Computes the CDF of the standard normal distribution."""
-    zz = np.fabs(z)
-    pdf = np.exp(-0.5 * zz * zz) / np.sqrt(2 * np.pi)
-    t = 1 / (1 + zz * 0.2316419)
-    poly = (
-        (((1.330274429 * t - 1.821255978) * t + 1.781477937) * t - 0.356563782)
-        * t
-        + 0.319381530
-    ) * t
-    return 1 - pdf * poly if z > 0 else pdf * poly
-
-
-@njit
-def inverse_normal_cdf(p: float) -> float:
-    """Computes the inverse CDF of the standard normal distribution."""
-    pp = p if p <= 0.5 else 1 - p
-    if pp == 0:
-        pp = 1.0e-10
-    t = np.sqrt(np.log(1 / (pp * pp)))
-    numer = (0.010328 * t + 0.802853) * t + 2.515517
-    denom = ((0.001308 * t + 0.189269) * t + 1.432788) * t + 1
-    x = t - numer / denom
-    return -x if p <= 0.5 else x
 
 
 class BootConfIntervals(NamedTuple):
@@ -64,12 +38,12 @@ class BootConfIntervals(NamedTuple):
     high_10: float
 
 
-@njit
+@njit(cache=True)
 def bca_boot_conf(
-    x: NDArray[np.float_],
+    x: NDArray[np.float64],
     n: int,
     n_boot: int,
-    fn: Callable[[NDArray[np.float_]], float],
+    fn: Callable[[NDArray[np.float64]], float],
 ) -> BootConfIntervals:
     """Computes confidence intervals for a user-defined parameter using the
     `bias corrected and accelerated (BCa) bootstrap method.
@@ -167,10 +141,10 @@ def bca_boot_conf(
     return BootConfIntervals(low_2p5, high_2p5, low_5, high_5, low_10, high_10)
 
 
-@njit
+@njit(cache=True)
 def profit_factor(
-    changes: NDArray[np.float_], use_log: bool = False
-) -> np.floating:
+    changes: NDArray[np.float64], use_log: bool = False
+) -> float:
     """Computes the profit factor, which is the ratio of gross profit to gross
     loss.
 
@@ -181,7 +155,7 @@ def profit_factor(
     wins = changes[changes > 0]
     losses = changes[changes < 0]
     if not len(wins) and not len(losses):
-        return np.float32(0)
+        return np.float64(0)
     numer = denom = 1.0e-10
     numer += np.sum(wins)
     denom -= np.sum(losses)
@@ -191,8 +165,8 @@ def profit_factor(
         return np.divide(numer, denom)
 
 
-@njit
-def log_profit_factor(changes: NDArray[np.float_]) -> np.floating:
+@njit(cache=True)
+def log_profit_factor(changes: NDArray[np.float64]) -> float:
     """Computes the log transformed profit factor, which is the ratio of gross
     profit to gross loss.
 
@@ -202,52 +176,52 @@ def log_profit_factor(changes: NDArray[np.float_]) -> np.floating:
     return profit_factor(changes, use_log=True)
 
 
-@njit
+@njit(cache=True)
 def sharpe_ratio(
-    changes: NDArray[np.float_],
+    returns: NDArray[np.float64],
     obs: Optional[int] = None,
     downside_only: bool = False,
-) -> np.floating:
+) -> float:
     """Computes the
     `Sharpe Ratio <https://en.wikipedia.org/wiki/Sharpe_ratio>`_.
 
     Args:
-        changes: Array of differences between each bar and the previous bar.
+        returns: Array of returns centered at 0.
         obs: Number of observations used to annualize the Sharpe Ratio. For
             example, a value of ``252`` would be used to annualize daily
             returns.
     """
-    std_changes = changes[changes < 0] if downside_only else changes
+    std_changes = returns[returns < 0] if downside_only else returns
     if not len(std_changes):
-        return np.float32(0)
+        return 0.0
     std = np.std(std_changes)
     if std == 0:
-        return np.float32(0)
-    sr = np.mean(changes) / std
+        return 0.0
+    sr = np.mean(returns) / std
     if obs is not None:
         sr *= np.sqrt(obs)
-    return sr
+    return float(sr)
 
 
 def sortino_ratio(
-    changes: NDArray[np.float_], obs: Optional[int] = None
+    returns: NDArray[np.float64], obs: Optional[int] = None
 ) -> float:
     """Computes the
     `Sortino Ratio <https://en.wikipedia.org/wiki/Sortino_ratio>`_.
 
     Args:
-        changes: Array of differences between each bar and the previous bar.
+        returns: Array of returns centered at 0.
         obs: Number of observations used to annualize the Sortino Ratio. For
             example, a value of ``252`` would be used to annualize daily
             returns.
     """
-    return float(sharpe_ratio(changes, obs, downside_only=True))
+    return float(sharpe_ratio(returns, obs, downside_only=True))
 
 
 def conf_profit_factor(
-    x: NDArray[np.float_], n: int, n_boot: int
+    x: NDArray[np.float64], n: int, n_boot: int
 ) -> BootConfIntervals:
-    """Computes confidence intervals for :func:`.profit_factor`."""
+    """Computes confidence intervals for ``profit_factor``."""
     intervals = bca_boot_conf(x, n, n_boot, log_profit_factor)
     return BootConfIntervals(
         low_2p5=np.exp(intervals.low_2p5),
@@ -260,7 +234,7 @@ def conf_profit_factor(
 
 
 def conf_sharpe_ratio(
-    x: NDArray[np.float_], n: int, n_boot: int, obs: Optional[int] = None
+    x: NDArray[np.float64], n: int, n_boot: int, obs: Optional[int] = None
 ) -> BootConfIntervals:
     """Computes confidence intervals for :func:`.sharpe_ratio`."""
     intervals = bca_boot_conf(x, n, n_boot, sharpe_ratio)
@@ -277,8 +251,8 @@ def conf_sharpe_ratio(
     return intervals
 
 
-@njit
-def max_drawdown(changes: NDArray[np.float_]) -> float:
+@njit(cache=True)
+def max_drawdown(changes: NDArray[np.float64]) -> float:
     """Computes maximum drawdown, measured in cash.
 
     Args:
@@ -301,36 +275,43 @@ def max_drawdown(changes: NDArray[np.float_]) -> float:
     return -dd
 
 
-def calmar_ratio(changes: NDArray[np.float_], bars_per_year: int) -> float:
+def calmar_ratio(returns: NDArray[np.float64], bars_per_year: int) -> float:
     """Computes the Calmar Ratio.
 
     Args:
-        changes: Array of differences between each bar and the previous bar.
+        returns: Array of returns centered at 0.
         bars_per_year: Number of bars per annum.
     """
-    if not len(changes):
+    if not len(returns):
         return 0
-    max_dd = np.abs(max_drawdown(changes))
+    max_dd = np.abs(max_drawdown(returns))
     if max_dd == 0:
         return 0
-    return np.mean(changes) * bars_per_year / max_dd
+    return np.mean(returns) * bars_per_year / max_dd
 
 
-@njit
-def max_drawdown_percent(returns: NDArray[np.float_]) -> float:
+@njit(cache=True)
+def max_drawdown_percent(
+    returns: NDArray[np.float64],
+) -> tuple[float, Optional[int]]:
     """Computes maximum drawdown, measured in percentage loss.
 
     Args:
         returns: Array of returns centered at 0.
+
+    Returns:
+        - Maximum drawdown, measured in percentage loss.
+        - Index of the maximum drawdown.
     """
     returns = returns + 1
     n = len(returns)
     if not n:
-        return 0
+        return 0, None
     cumulative = 1.0
     max_equity = 1.0
     dd = 0.0
-    for r in returns:
+    index = None
+    for i, r in enumerate(returns):
         cumulative *= r
         if cumulative > max_equity:
             max_equity = cumulative
@@ -338,11 +319,12 @@ def max_drawdown_percent(returns: NDArray[np.float_]) -> float:
             loss = (cumulative / max_equity - 1) * 100
             if loss < dd:
                 dd = loss
-    return dd
+                index = i
+    return dd, index
 
 
-@njit
-def _dd_conf(q: float, boot: NDArray[np.float_]) -> float:
+@njit(cache=True)
+def _dd_conf(q: float, boot: NDArray[np.float64]) -> float:
     k = int((q * (len(boot) + 1)) - 1)
     k = max(k, 0)
     return boot[k]
@@ -378,8 +360,8 @@ class DrawdownMetrics(NamedTuple):
     pct_confs: DrawdownConfs
 
 
-@njit
-def _dd_confs(boot: NDArray[np.float_]) -> DrawdownConfs:
+@njit(cache=True)
+def _dd_confs(boot: NDArray[np.float64]) -> DrawdownConfs:
     boot.sort()
     boot = boot[::-1]
     return DrawdownConfs(
@@ -390,10 +372,10 @@ def _dd_confs(boot: NDArray[np.float_]) -> DrawdownConfs:
     )
 
 
-@njit
+@njit(cache=True)
 def drawdown_conf(
-    changes: NDArray[np.float_],
-    returns: NDArray[np.float_],
+    changes: NDArray[np.float64],
+    returns: NDArray[np.float64],
     n: int,
     n_boot: int,
 ) -> DrawdownMetrics:
@@ -429,12 +411,12 @@ def drawdown_conf(
             changes_sample[j] = changes[k]
             returns_sample[j] = returns[k]
         boot_dd[i] = max_drawdown(changes_sample)
-        boot_dd_pct[i] = max_drawdown_percent(returns_sample)
+        boot_dd_pct[i], _ = max_drawdown_percent(returns_sample)
     return DrawdownMetrics(_dd_confs(boot_dd), _dd_confs(boot_dd_pct))
 
 
-@njit
-def relative_entropy(values: NDArray[np.float_]) -> float:
+@njit(cache=True)
+def relative_entropy(values: NDArray[np.float64]) -> float:
     """Computes the relative `entropy
     <https://en.wikipedia.org/wiki/Entropy_(information_theory)>`_.
     """
@@ -449,8 +431,8 @@ def relative_entropy(values: NDArray[np.float_]) -> float:
         n_bins = 10
     elif n >= 100:
         n_bins = 5
-    min_val = np.min(x)
-    max_val = np.max(x)
+    min_val = float(np.min(x))
+    max_val = float(np.max(x))
     factor = (n_bins - 1.0e-10) / (max_val - min_val + 1.0e-60)
     count = np.zeros(n_bins)
     for v in x:
@@ -465,18 +447,22 @@ def relative_entropy(values: NDArray[np.float_]) -> float:
     return -sum_ / np.log(n_bins)
 
 
-def iqr(values: NDArray[np.float_]) -> float:
+def iqr(values: NDArray[np.float64]) -> float:
     """Computes the `interquartile range (IQR)
     <https://en.wikipedia.org/wiki/Interquartile_range>`_ of ``values``."""
     x = values[~np.isnan(values)]
     if not len(x):
         return 0
-    q75, q25 = np.percentile(x, [75, 25], method="midpoint")
+    percentiles: NDArray[np.float64] = np.percentile(
+        x, [75, 25], method="midpoint"
+    )
+    q75: float = float(percentiles[0])
+    q25: float = float(percentiles[1])
     return q75 - q25
 
 
-@njit
-def ulcer_index(values: NDArray[np.float_], period: int = 14) -> float:
+@njit(cache=True)
+def ulcer_index(values: NDArray[np.float64], period: int = 14) -> float:
     """Computes the
     `Ulcer Index <https://en.wikipedia.org/wiki/Ulcer_index>`_ of ``values``.
     """
@@ -494,9 +480,9 @@ def ulcer_index(values: NDArray[np.float_], period: int = 14) -> float:
     return np.sqrt(np.mean(np.square(dd)))
 
 
-@njit
+@njit(cache=True)
 def upi(
-    values: NDArray[np.float_], period: int = 14, ui: Optional[float] = None
+    values: NDArray[np.float64], period: int = 14, ui: Optional[float] = None
 ) -> float:
     """Computes the `Ulcer Performance Index
     <https://en.wikipedia.org/wiki/Ulcer_index>`_ of ``values``.
@@ -513,7 +499,7 @@ def upi(
     return float(np.mean(r) / ui)
 
 
-def win_loss_rate(pnls: NDArray[np.float_]) -> tuple[float, float]:
+def win_loss_rate(pnls: NDArray[np.float64]) -> tuple[float, float]:
     """Computes the win rate and loss rate as percentages.
 
     Args:
@@ -531,7 +517,7 @@ def win_loss_rate(pnls: NDArray[np.float_]) -> tuple[float, float]:
     return win_rate, loss_rate
 
 
-def winning_losing_trades(pnls: NDArray[np.float_]) -> tuple[int, int]:
+def winning_losing_trades(pnls: NDArray[np.float64]) -> tuple[int, int]:
     """Returns the number of winning and losing trades.
 
     Args:
@@ -546,7 +532,7 @@ def winning_losing_trades(pnls: NDArray[np.float_]) -> tuple[int, int]:
     return len(pnls[pnls > 0]), len(pnls[pnls < 0])
 
 
-def total_profit_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
+def total_profit_loss(pnls: NDArray[np.float64]) -> tuple[float, float]:
     """Computes total profit and loss.
 
     Args:
@@ -563,7 +549,7 @@ def total_profit_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
     )
 
 
-def avg_profit_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
+def avg_profit_loss(pnls: NDArray[np.float64]) -> tuple[float, float]:
     """Computes the average profit and average loss per trade.
 
     Args:
@@ -576,12 +562,12 @@ def avg_profit_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
     profits = pnls[pnls > 0]
     losses = pnls[pnls < 0]
     return (
-        np.mean(profits) if len(profits) else 0,
-        np.mean(losses) if len(losses) else 0,
+        float(np.mean(profits)) if len(profits) else 0,
+        float(np.mean(losses)) if len(losses) else 0,
     )
 
 
-def largest_win_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
+def largest_win_loss(pnls: NDArray[np.float64]) -> tuple[float, float]:
     """Computes the largest profit and largest loss of all trades.
 
     Args:
@@ -598,8 +584,8 @@ def largest_win_loss(pnls: NDArray[np.float_]) -> tuple[float, float]:
     )
 
 
-@njit
-def max_wins_losses(pnls: NDArray[np.float_]) -> tuple[int, int]:
+@njit(cache=True)
+def max_wins_losses(pnls: NDArray[np.float64]) -> tuple[int, int]:
     """Computes the max consecutive wins and max consecutive losses.
 
     Args:
@@ -656,7 +642,7 @@ def annual_total_return_percent(
     ) * 100
 
 
-def r_squared(values: NDArray[np.float_]) -> float:
+def r_squared(values: NDArray[np.float64]) -> float:
     """Computes R-squared of ``values``."""
     n = len(values)
     if not n:
@@ -666,8 +652,8 @@ def r_squared(values: NDArray[np.float_]) -> float:
         coeffs = np.polyfit(x, values, 1)
         pred = np.poly1d(coeffs)(x)
         y_hat = np.mean(values)
-        ssres = np.sum((values - pred) ** 2)
-        sstot = np.sum((values - y_hat) ** 2)
+        ssres = float(np.sum((values - pred) ** 2))
+        sstot = float(np.sum((values - y_hat) ** 2))
         if sstot == 0:
             return 0
         return 1 - ssres / sstot
@@ -716,6 +702,7 @@ class EvalMetrics:
             :attr:`pybroker.config.StrategyConfig.fee_mode` for more info.
         max_drawdown: Maximum drawdown, measured in cash.
         max_drawdown_pct: Maximum drawdown, measured in percentage.
+        max_drawdown_date: Date of maximum drawdown.
         win_rate: Win rate of trades.
         loss_rate: Loss rate of trades.
         winning_trades: Number of winning trades.
@@ -769,6 +756,7 @@ class EvalMetrics:
     total_fees: float = field(default=0)
     max_drawdown: float = field(default=0)
     max_drawdown_pct: float = field(default=0)
+    max_drawdown_date: Optional[datetime] = field(default=None)
     win_rate: float = field(default=0)
     loss_rate: float = field(default=0)
     winning_trades: int = field(default=0)
@@ -852,6 +840,7 @@ class EvaluateMixin:
         bootstrap_sample_size: int,
         bootstrap_samples: int,
         bars_per_year: Optional[int],
+        seed: Optional[int] = 42,
     ) -> EvalResult:
         """Computes evaluation metrics.
 
@@ -866,13 +855,18 @@ class EvaluateMixin:
                 to annualize evaluation metrics. For example, a value of
                 ``252`` would be used to annualize the Sharpe Ratio for daily
                 returns.
+            seed: Random seed for reproducibility. Defaults to 42.
 
         Returns:
             :class:`.EvalResult` containing evaluation metrics.
         """
-        market_values = portfolio_df["market_value"].to_numpy()
-        fees = portfolio_df["fees"].to_numpy()
+        if seed is not None:
+            np.random.seed(seed)
+        market_values = portfolio_df["market_value"].to_numpy(copy=True)
+        fees = portfolio_df["fees"].to_numpy(copy=True)
         bar_returns = self._calc_bar_returns(portfolio_df)
+        bar_return_dates = bar_returns.index.to_series().reset_index(drop=True)
+        bar_returns = bar_returns.to_numpy(copy=True)
         bar_changes = self._calc_bar_changes(portfolio_df)
         if (
             not len(market_values)
@@ -880,19 +874,25 @@ class EvaluateMixin:
             or not len(bar_changes)
         ):
             return EvalResult(EvalMetrics(), None)
-        pnls = trades_df["pnl"].to_numpy()
-        return_pcts = trades_df["return_pct"].to_numpy()
-        bars = trades_df["bars"].to_numpy()
-        winning_bars = trades_df[trades_df["pnl"] > 0]["bars"].to_numpy()
-        losing_bars = trades_df[trades_df["pnl"] < 0]["bars"].to_numpy()
-        largest_win = trades_df[trades_df["pnl"] == trades_df["pnl"].max()]
+        pnls = trades_df["pnl"].to_numpy(copy=True)
+        return_pcts = trades_df["return_pct"].to_numpy(copy=True)
+        bars = trades_df["bars"].to_numpy(copy=True)
+        winning_trades = trades_df[trades_df["pnl"] > 0]
+        winning_bars = winning_trades["bars"].to_numpy(copy=True)
+        losing_trades = trades_df[trades_df["pnl"] < 0]
+        losing_bars = losing_trades["bars"].to_numpy(copy=True)
+        largest_win = winning_trades[
+            winning_trades["pnl"] == winning_trades["pnl"].max()
+        ]
         largest_win_pct = (
             0 if largest_win.empty else largest_win["return_pct"].values[0]
         )
         largest_win_bars = (
             0 if largest_win.empty else largest_win["bars"].values[0]
         )
-        largest_loss = trades_df[trades_df["pnl"] == trades_df["pnl"].min()]
+        largest_loss = losing_trades[
+            losing_trades["pnl"] == losing_trades["pnl"].min()
+        ]
         largest_loss_pct = (
             0 if largest_loss.empty else largest_loss["return_pct"].values[0]
         )
@@ -903,6 +903,7 @@ class EvaluateMixin:
             market_values,
             bar_changes,
             bar_returns,
+            bar_return_dates,
             pnls,
             return_pcts,
             bars=bars,
@@ -926,16 +927,17 @@ class EvaluateMixin:
             samples=bootstrap_samples, sample_size=bootstrap_sample_size
         )
         confs_result = self._calc_conf_intervals(
-            bar_changes,
-            bootstrap_sample_size,
-            bootstrap_samples,
-            bars_per_year,
+            changes=bar_changes,
+            returns=bar_returns,
+            sample_size=bootstrap_sample_size,
+            samples=bootstrap_samples,
+            bars_per_year=bars_per_year,
         )
         dd_result = self._calc_drawdown_conf(
-            bar_changes,
-            bar_returns,
-            bootstrap_sample_size,
-            bootstrap_samples,
+            changes=bar_changes,
+            returns=bar_returns,
+            sample_size=bootstrap_sample_size,
+            samples=bootstrap_samples,
         )
         bootstrap = BootstrapResult(
             conf_intervals=confs_result.df,
@@ -945,24 +947,27 @@ class EvaluateMixin:
             drawdown=dd_result.metrics,
         )
         logger.calc_bootstrap_metrics_completed()
+        if seed is not None:
+            np.random.seed()
         return EvalResult(metrics, bootstrap)
 
-    def _calc_bar_returns(self, df: pd.DataFrame) -> NDArray[np.float32]:
+    def _calc_bar_returns(self, df: pd.DataFrame) -> pd.Series:
         prev_market_value = df["market_value"].shift(1)
         returns = (df["market_value"] - prev_market_value) / prev_market_value
-        return returns.dropna().to_numpy()
+        return returns.dropna()
 
-    def _calc_bar_changes(self, df: pd.DataFrame) -> NDArray[np.float32]:
+    def _calc_bar_changes(self, df: pd.DataFrame) -> NDArray[np.float64]:
         changes = df["market_value"] - df["market_value"].shift(1)
-        return changes.dropna().to_numpy()
+        return changes.dropna().to_numpy(copy=True)
 
     def _calc_eval_metrics(
         self,
-        market_values: NDArray[np.float_],
-        bar_changes: NDArray[np.float_],
-        bar_returns: NDArray[np.float_],
-        pnls: NDArray[np.float_],
-        return_pcts: NDArray[np.float_],
+        market_values: NDArray[np.float64],
+        bar_changes: NDArray[np.float64],
+        bar_returns: NDArray[np.float64],
+        bar_return_dates: pd.Series,
+        pnls: NDArray[np.float64],
+        return_pcts: NDArray[np.float64],
         bars: NDArray[np.int_],
         winning_bars: NDArray[np.int_],
         losing_bars: NDArray[np.int_],
@@ -970,14 +975,19 @@ class EvaluateMixin:
         largest_win_pct: float,
         largest_loss_num_bars: int,
         largest_loss_pct: float,
-        fees: NDArray[np.float_],
+        fees: NDArray[np.float64],
         bars_per_year: Optional[int],
     ) -> EvalMetrics:
         total_fees = fees[-1] if len(fees) else 0
         max_dd = max_drawdown(bar_changes)
-        max_dd_pct = max_drawdown_percent(bar_returns)
-        sharpe = sharpe_ratio(bar_changes, bars_per_year)
-        sortino = sortino_ratio(bar_changes, bars_per_year)
+        max_dd_pct, max_dd_index = max_drawdown_percent(bar_returns)
+        max_dd_date = (
+            bar_return_dates.iloc[max_dd_index].to_pydatetime()
+            if max_dd_index
+            else None
+        )
+        sharpe = sharpe_ratio(bar_returns, bars_per_year)
+        sortino = sortino_ratio(bar_returns, bars_per_year)
         pf = profit_factor(bar_changes)
         r2 = r_squared(market_values)
         ui = ulcer_index(market_values)
@@ -1043,13 +1053,14 @@ class EvaluateMixin:
             annual_volatility_pct = float(
                 np.std(bar_returns * 100) * np.sqrt(bars_per_year)
             )
-            calmar = calmar_ratio(bar_changes, bars_per_year)
+            calmar = calmar_ratio(bar_returns, bars_per_year)
         return EvalMetrics(
             trade_count=len(pnls),
             initial_market_value=market_values[0],
             end_market_value=market_values[-1],
             max_drawdown=max_dd,
             max_drawdown_pct=max_dd_pct,
+            max_drawdown_date=max_dd_date,
             largest_win=largest_win,
             largest_win_pct=largest_win_pct,
             largest_win_bars=largest_win_num_bars,
@@ -1078,10 +1089,10 @@ class EvaluateMixin:
             total_return_pct=total_return_pct,
             annual_return_pct=annual_return_pct,
             total_fees=total_fees,
-            sharpe=sharpe,
+            sharpe=float(sharpe),
             sortino=sortino,
             calmar=calmar,
-            profit_factor=pf,
+            profit_factor=float(pf),
             equity_r2=r2,
             ulcer_index=ui,
             upi=upi_,
@@ -1092,7 +1103,8 @@ class EvaluateMixin:
 
     def _calc_conf_intervals(
         self,
-        changes: NDArray[np.float_],
+        changes: NDArray[np.float64],
+        returns: NDArray[np.float64],
         sample_size: int,
         samples: int,
         bars_per_year: Optional[int],
@@ -1100,7 +1112,7 @@ class EvaluateMixin:
         pf_intervals = conf_profit_factor(changes, sample_size, samples)
         pf_conf = self._to_conf_intervals("Profit Factor", pf_intervals)
         sr_intervals = conf_sharpe_ratio(
-            changes, sample_size, samples, bars_per_year
+            returns, sample_size, samples, bars_per_year
         )
         sharpe_conf = self._to_conf_intervals("Sharpe Ratio", sr_intervals)
         df = pd.DataFrame.from_records(
@@ -1124,8 +1136,8 @@ class EvaluateMixin:
 
     def _calc_drawdown_conf(
         self,
-        changes: NDArray[np.float_],
-        returns: NDArray[np.float_],
+        changes: NDArray[np.float64],
+        returns: NDArray[np.float64],
         sample_size: int,
         samples: int,
     ) -> _DrawdownResult:
